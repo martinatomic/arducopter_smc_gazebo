@@ -5,6 +5,7 @@ __author__ = 'mtomic'
 import rospy
 from geometry_msgs.msg import Vector3, Vector3Stamped, PoseWithCovarianceStamped
 from sensor_msgs.msg import Imu
+from mav_msgs.msg import MotorSpeed
 from std_msgs.msg import Float32, Float64
 import math
 from math import cos, sin, tan, tanh, pi
@@ -65,11 +66,11 @@ class SMC_basic_ctl(object):
 
 		# SMC
 		self.smc_P = 0.2
-		self.smc_I = 100
-		self.smc_D = 0.05
+		self.smc_I = 50
+		self.smc_D = 0.5
 		self.lam = 40.0
-		self.eta = 5
-		self.tanh_n = 50
+		self.eta = 0.5
+		self.tanh_n = 10
 
 		# Sigma
 		self.sigma_I_old_p = 0
@@ -107,6 +108,9 @@ class SMC_basic_ctl(object):
 
 		self.ref_pitch = 0				# REF
 		self.ref_roll = 0				# REF
+		self.ref_z = 0
+		self.pose_z = 0
+
 
 
 		
@@ -118,6 +122,8 @@ class SMC_basic_ctl(object):
 		rospy.Subscriber('/arducopter/imu', Imu, self.imu_cb)
 		rospy.Subscriber('/clock', Clock, self.clock_cb)
 		rospy.Subscriber('/arducopter/euler_ref', Vector3, self.ref_cb)
+		rospy.Subscriber('/arducopter/sensors/pose1', PoseWithCovarianceStamped, self.pose_cb)
+		rospy.Subscriber('/arducopter/pos_ref', Vector3, self.pose_ref_cb)
 
 		#### PUBLISHERS ####
 		self.pub_mass0 = rospy.Publisher('/arducopter/movable_mass_0_position_controller/command', Float64, queue_size = 1)
@@ -129,6 +135,7 @@ class SMC_basic_ctl(object):
 		self.s_pub = rospy.Publisher('/arducopter/sigma', Float64, queue_size = 1)
 		self.dx_pub = rospy.Publisher('/arducopter/dx', Float64, queue_size = 1)
 		self.euler_ang = rospy.Publisher('arducopter/euler_angles', Vector3, queue_size = 1)
+		self.motor_cmd = rospy.Publisher('/arducopter/command/motors', MotorSpeed, queue_size = 1)
 
 		#rospy.sleep(0.01)
 
@@ -209,7 +216,7 @@ class SMC_basic_ctl(object):
 
 			dx_pitch = self.control_smc(self.sigma_pitch, self.y_pitch[lp-1], self.yd_pitch[lpd-1], self.ydd_pitch[lpdd-1], pitch_m, self.tanh_n)
 
-			print dx_pitch
+			#print dx_pitch
 			dx_msg = Float64()
 			dx_msg.data = dx_pitch
 			self.dx_pub.publish(dx_msg)
@@ -244,6 +251,15 @@ class SMC_basic_ctl(object):
 
 			dy_roll = self.control_smc(self.sigma_roll, self.y_roll[lp-1], self.yd_roll[lpd-1], self.ydd_roll[lpdd-1], roll_m, self.tanh_n)
 
+
+			if self.pose_z <= 0.13:
+				dx_pitch = 0.0
+				dy_roll = 0.0
+
+			if self.ref_z == 0.0 and self.pose_z <= 0.13:
+				motors_msg = MotorSpeed()
+				motors_msg.motor_speed = [0.0, 0.0, 0.0, 0.0]
+				self.motor_cmd.publish(motors_msg)
 
 			# Publishing mass positions
 			mass0_cmd_msg = Float64()
@@ -324,7 +340,7 @@ class SMC_basic_ctl(object):
 		sigma_P = 0
 		sigma_I = 0
 		sigma_D = 0
-		tol = 0.001
+		tol = 0.00001
 
 		e = ref - angle_m
 		de = ref_d - angle_r
@@ -361,7 +377,7 @@ class SMC_basic_ctl(object):
 		# order to design a stabilizing controller
 
 		u_nom = (e * self.lam + ref_dd) * self.Iq_yy + ref_d * self.smc_P
-		u_ctl_vector = self.eta * tanh(n*sigma)
+		u_ctl_vector = self.eta * np.sign(n*sigma)
 
 		u_tmp = (u_nom + u_ctl_vector) / (2 * self.m * self.g)
 
@@ -416,6 +432,14 @@ class SMC_basic_ctl(object):
 	def ref_cb(self, msg):
 		self.ref_roll = msg.x
 		self.ref_pitch = msg.y
+
+	def pose_cb(self, msg):
+		self.pose_z = msg.pose.pose.position.z
+
+	def pose_ref_cb(self, msg):
+		self.ref_z = msg.z
+
+
 
 		
 
