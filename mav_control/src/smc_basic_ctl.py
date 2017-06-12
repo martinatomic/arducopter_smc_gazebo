@@ -377,7 +377,7 @@ class SMC_basic_ctl(object):
 		# order to design a stabilizing controller
 
 		u_nom = (e * self.lam + ref_dd) * self.Iq_yy + ref_d * self.smc_P
-		u_ctl_vector = self.eta * np.sign(n*sigma)
+		u_ctl_vector = self.eta * tanh(n*sigma)
 
 		u_tmp = (u_nom + u_ctl_vector) / (2 * self.m * self.g)
 
