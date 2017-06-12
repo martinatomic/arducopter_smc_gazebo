@@ -1,0 +1,40 @@
+<?xml version="1.0" ?>
+
+<launch>
+
+  <!-- Load joint controller configurations from YAML file to parameter server -->
+  <rosparam file="$(find mav_control)/config/mav_control.yaml" command="load"/>
+
+  <!-- load the controllers -->
+  <node name="controller_spawner" pkg="controller_manager" type="spawner" respawn="false"
+    output="screen" ns="/arducopter"  args="joint_state_controller
+      movable_mass_0_position_controller
+      movable_mass_1_position_controller 
+      movable_mass_2_position_controller 
+      movable_mass_3_position_controller"/>
+
+  <!-- convert joint states to TF transforms for rviz, etc -->
+  <node name="robot_state_publisher" pkg="robot_state_publisher" type="robot_state_publisher"
+    respawn="false" output="screen">
+    <remap from="/joint_states" to="/arducopter/joint_states"/>
+  </node>
+
+  <node pkg="mav_control" type="mav_state_pub.py" name="mav_vel_publisher" output="screen">
+        <param name="/use_sim_time" value="true"/>
+  </node> 
+
+  <node pkg="mav_control" type="smc_basic_ctl.py" name="SMC_ctl" output="screen">
+        <param name="/use_sim_time" value="true"/>
+  </node> 
+      
+  
+  <!--height control -->
+  <node pkg="mav_control" type="height_ctl.py" name="height_ctl" output="screen">
+        <param name="gm_attitude_ctl" value="1"/>
+        <param name="/use_sim_time" value="true"/>
+  </node>
+
+
+</launch>
+
+
