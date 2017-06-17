@@ -72,11 +72,11 @@ class SMC_basic_ctl(object):
 
 		# SMC
 		self.smc_P = 0.2
-		self.smc_I = 65
+		self.smc_I = 35
 		self.smc_D = 0.1
 		self.lam = 40.0
 		self.eta = 0.25
-		self.tanh_n = 0.0
+		self.tanh_n = 20.0
 
 		# Matlab params
 		"""self.smc_P = 0.2
