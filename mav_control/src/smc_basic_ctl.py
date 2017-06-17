@@ -8,7 +8,7 @@ from sensor_msgs.msg import Imu
 from mav_msgs.msg import MotorSpeed
 from std_msgs.msg import Float32, Float64
 import math
-from math import cos, sin, tan, tanh, pi
+from math import cos, sin, tan, tanh, pi, atan2, asin
 from rosgraph_msgs.msg import Clock
 import tf
 import numpy as np
@@ -22,11 +22,17 @@ class SMC_basic_ctl(object):
 
 	Subscribes to:
 		/arducopter/imu
-
+		/arducopter/sensors/pose1
+		/arducopter/euler_ref
+		/arducopter/pose_ref
 
 	Publishes:
-
-
+		/arducopter/sigma
+		/arducopter/euler_angles
+		/arducopter/movable_mass_0_position_controller/command
+		/arducopter/movable_mass_1_position_controller/command
+		/arducopter/movable_mass_2_position_controller/command
+		/arducopter/movable_mass_3_position_controller/command
 
 	"""
 
@@ -66,11 +72,19 @@ class SMC_basic_ctl(object):
 
 		# SMC
 		self.smc_P = 0.2
-		self.smc_I = 50
-		self.smc_D = 0.5
+		self.smc_I = 65
+		self.smc_D = 0.1
+		self.lam = 40.0
+		self.eta = 0.25
+		self.tanh_n = 0.0
+
+		# Matlab params
+		"""self.smc_P = 0.2
+		self.smc_I = 10
+		self.smc_D = 0.1
 		self.lam = 40.0
 		self.eta = 0.5
-		self.tanh_n = 10
+		self.tanh_n = 20"""
 
 		# Sigma
 		self.sigma_I_old_p = 0
@@ -90,8 +104,8 @@ class SMC_basic_ctl(object):
 		self.ukk_pitch = 0				# u(k-2)
 		self.yk_pitch = 0				# y(k-1)
 		self.ykk_pitch = 0				# y(k-2)
-		self.y_pitch = []				# y(k)
-		self.yd_pitch = []				# y'
+		self.y_pitch = [0]				# y(k)
+		self.yd_pitch = [0]				# y'
 		self.ydd_pitch = [0]			# y''
 		self.t = []
 		self.br = 0
@@ -100,8 +114,8 @@ class SMC_basic_ctl(object):
 		self.ukk_roll = 0				# u(k-2)
 		self.yk_roll = 0				# y(k-1)
 		self.ykk_roll = 0				# y(k-2)
-		self.y_roll = []				# y(k)
-		self.yd_roll = []				# y'
+		self.y_roll = [0]				# y(k)
+		self.yd_roll = [0]				# y'
 		self.ydd_roll = [0]				# y''
 
 
@@ -111,7 +125,15 @@ class SMC_basic_ctl(object):
 		self.ref_z = 0
 		self.pose_z = 0
 
+		self.Ts = 0.01
 
+		self.lpp = 0
+		self.lpdp = 0
+		self.lpddp = 0
+
+		self.lpr = 0
+		self.lpdr = 0
+		self.lpddr = 0
 
 		
 
@@ -132,6 +154,8 @@ class SMC_basic_ctl(object):
 		self.pub_mass3 = rospy.Publisher('/arducopter/movable_mass_3_position_controller/command', Float64, queue_size = 1)
 
 		self.pub_ref = rospy.Publisher('/arducopter/ref', Vector3, queue_size = 1)
+		self.pub_ref_d = rospy.Publisher('/arducopter/refd', Vector3, queue_size = 1)
+		self.pub_ref_dd = rospy.Publisher('/arducopter/refdd', Vector3, queue_size = 1)
 		self.s_pub = rospy.Publisher('/arducopter/sigma', Float64, queue_size = 1)
 		self.dx_pub = rospy.Publisher('/arducopter/dx', Float64, queue_size = 1)
 		self.euler_ang = rospy.Publisher('arducopter/euler_angles', Vector3, queue_size = 1)
@@ -166,6 +190,7 @@ class SMC_basic_ctl(object):
 			clock_now_pitch = self.clock
 			dt = (clock_now_pitch.clock - clock_old.clock).to_sec()
 			clock_old = clock_now_pitch
+			
 			dt = Ts
 
 			# ANGLES
@@ -182,30 +207,22 @@ class SMC_basic_ctl(object):
 			###### PITCH ######
 			###################
 
-			# Filtriranje reference
-			self.y_pitch.append(self.ref_pref(self.uk_pitch, self.ukk_pitch, self.yk_pitch, self.ykk_pitch))
-			self.yd_pitch.append(self.dy(self.y_pitch, Ts))
-
-			if len(self.y_pitch) > 1:
-				self.ydd_pitch.append(self.ddy(self.y_pitch, Ts))
-
-			# Azuriranje stanja
-			lp = len(self.y_pitch)
-			lpd = len(self.yd_pitch)
-			lpdd = len(self.ydd_pitch)
-
-			self.ukk_pitch = self.uk_pitch
-			self.uk_pitch = ref_pitch
-			self.ykk_pitch = self.yk_pitch
-			self.yk_pitch = self.y_pitch[lp-1]
 
 			# PUBLISHER REFERENCE - ZA TESTIRANJE
 			ref_msg = Vector3()
-			ref_msg.y = self.y_pitch[lp-1]
+			ref_msg.y = self.y_pitch[self.lpp-1]
 			self.pub_ref.publish(ref_msg)
 
+			#ref_msg = Vector3()
+			#ref_msg.y = self.yd_pitch[lpd-1]
+			#self.pub_ref_d.publish(ref_msg)
+
+			#ref_msg = Vector3()
+			#ref_msg.y = self.ydd_pitch[lpdd-1]
+			#self.pub_ref_dd.publish(ref_msg)
+
 			# Sigma
-			[self.sigma_I_old_p, self.sigma_pitch] = self.sigma(self.y_pitch[lp-1], self.yd_pitch[lpd-1], pitch_m, pitch_r, dt, self.sigma_I_old_p)
+			[self.sigma_I_old_p, self.sigma_pitch] = self.sigma(self.y_pitch[self.lpp-1], self.yd_pitch[self.lpdp-1], pitch_m, pitch_r, dt, self.sigma_I_old_p)
 
 			# PUBLISHER SIGMA - ZA TESTIRANJE
 			s_msg = Float64()
@@ -214,7 +231,7 @@ class SMC_basic_ctl(object):
 
 			# Control signal
 
-			dx_pitch = self.control_smc(self.sigma_pitch, self.y_pitch[lp-1], self.yd_pitch[lpd-1], self.ydd_pitch[lpdd-1], pitch_m, self.tanh_n)
+			dx_pitch = self.control_smc(self.sigma_pitch, self.y_pitch[self.lpp-1], self.yd_pitch[self.lpdp-1], self.ydd_pitch[self.lpddp-1], pitch_m, self.tanh_n)
 
 			#print dx_pitch
 			dx_msg = Float64()
@@ -227,35 +244,21 @@ class SMC_basic_ctl(object):
 			######  ROLL ######
 			###################
 
-			# Filtriranje reference
-			self.y_roll.append(self.ref_pref(self.uk_roll, self.ukk_roll, self.yk_roll, self.ykk_roll))
-			self.yd_roll.append(self.dy(self.y_roll, Ts))
-
-			if len(self.y_roll) > 1:
-				self.ydd_roll.append(self.ddy(self.y_roll, Ts))
-
-			# Azuriranje stanja
-			lp = len(self.y_roll)
-			lpd = len(self.yd_roll)
-			lpdd = len(self.ydd_roll)
-
-			self.ukk_roll = self.uk_roll
-			self.uk_roll = ref_roll
-			self.ykk_roll = self.yk_roll
-			self.yk_roll = self.y_roll[lp-1]
 
 			# Sigma
-			[self.sigma_I_old_r, self.sigma_roll] = self.sigma(self.y_roll[lp-1], self.yd_roll[lpd-1], roll_m, roll_r, dt, self.sigma_I_old_r)
+			[self.sigma_I_old_r, self.sigma_roll] = self.sigma(self.y_roll[self.lpr-1], self.yd_roll[self.lpdr-1], roll_m, roll_r, dt, self.sigma_I_old_r)
 
 			# Control signal
 
-			dy_roll = self.control_smc(self.sigma_roll, self.y_roll[lp-1], self.yd_roll[lpd-1], self.ydd_roll[lpdd-1], roll_m, self.tanh_n)
+			dy_roll = self.control_smc(self.sigma_roll, self.y_roll[self.lpr-1], self.yd_roll[self.lpdr-1], self.ydd_roll[self.lpddr-1], roll_m, self.tanh_n)
 
 
+			# AKO SE NALAZIMO NA PODU ZAKOCI MASE - DA SE NE KRECE U POCETNOM TRENUTKU
 			if self.pose_z <= 0.13:
 				dx_pitch = 0.0
 				dy_roll = 0.0
 
+			# SLIJETANJE
 			if self.ref_z == 0.0 and self.pose_z <= 0.13:
 				motors_msg = MotorSpeed()
 				motors_msg.motor_speed = [0.0, 0.0, 0.0, 0.0]
@@ -286,26 +289,12 @@ class SMC_basic_ctl(object):
 			self.euler_ang.publish(angle_msg)
 
 
-			
-				
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 	# USER FUNCTIONS
 	# Prefiltar
 	def ref_pref(self, uk, ukk, yk, ykk):
-		return 0.001664*uk + 0.0016*ukk + 1.8857*yk - 0.8890*ykk
+		return 0.001663730036015*uk + 0.001599747657011*ukk + 1.885746287709750*yk - 0.889009765402775*ykk
 
 	# Aproksimacija prve derivacije
 	def dy(self, y, Ts):
@@ -340,7 +329,7 @@ class SMC_basic_ctl(object):
 		sigma_P = 0
 		sigma_I = 0
 		sigma_D = 0
-		tol = 0.00001
+		tol = 0.001
 
 		e = ref - angle_m
 		de = ref_d - angle_r
@@ -360,7 +349,18 @@ class SMC_basic_ctl(object):
 		sigma_D = self.smc_D * de / dt
 
 		sigma = sigma_P + sigma_I + sigma_D
+		
+
+		
+
+		self.br += 1
+		if self.br % 30 == 0:
+			#print sigma
+			pass
+
+
 		sigma = self.dead_zone(sigma, tol)
+
 
 		# Sigma
 		return sigma_I_old, sigma
@@ -377,7 +377,9 @@ class SMC_basic_ctl(object):
 		# order to design a stabilizing controller
 
 		u_nom = (e * self.lam + ref_dd) * self.Iq_yy + ref_d * self.smc_P
-		u_ctl_vector = self.eta * tanh(n*sigma)
+		u_ctl_vector = self.eta * tanh(sigma)
+
+		
 
 		u_tmp = (u_nom + u_ctl_vector) / (2 * self.m * self.g)
 
@@ -433,15 +435,53 @@ class SMC_basic_ctl(object):
 		self.ref_roll = msg.x
 		self.ref_pitch = msg.y
 
+		# Filtriranje reference
+		# Referencu spremam u listu radi urednosti, 
+		# kasnije pri proracunu koristim zadnju spremljenu vrijdnost
+
+		### PITCH ###
+
+		self.y_pitch.append(self.ref_pref(self.uk_pitch, self.ukk_pitch, self.yk_pitch, self.ykk_pitch))
+		self.yd_pitch.append(self.dy(self.y_pitch, self.Ts))
+
+		if len(self.y_pitch) > 1:
+			self.ydd_pitch.append(self.ddy(self.y_pitch, self.Ts))
+
+		# Azuriranje stanja
+		self.lpp = len(self.y_pitch)
+		self.lpdp = len(self.yd_pitch)
+		self.lpddp = len(self.ydd_pitch)
+
+		self.ukk_pitch = self.uk_pitch
+		self.uk_pitch = self.ref_pitch
+		self.ykk_pitch = self.yk_pitch
+		self.yk_pitch = self.y_pitch[self.lpp-1]	
+
+		### ROLL ###
+
+		self.y_roll.append(self.ref_pref(self.uk_roll, self.ukk_roll, self.yk_roll, self.ykk_roll))
+		self.yd_roll.append(self.dy(self.y_roll, self.Ts))
+
+		if len(self.y_roll) > 1:
+			self.ydd_roll.append(self.ddy(self.y_roll, self.Ts))
+
+		# Azuriranje stanja
+		self.lpr = len(self.y_roll)
+		self.lpdr = len(self.yd_roll)
+		self.lpddr = len(self.ydd_roll)
+
+		self.ukk_roll = self.uk_roll
+		self.uk_roll = self.ref_roll
+		self.ykk_roll = self.yk_roll
+		self.yk_roll = self.y_roll[self.lpr-1]
+
+
+
 	def pose_cb(self, msg):
 		self.pose_z = msg.pose.pose.position.z
 
 	def pose_ref_cb(self, msg):
 		self.ref_z = msg.z
-
-
-
-		
 
 
 if __name__ == '__main__':

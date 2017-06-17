@@ -59,9 +59,9 @@
   <!-- Moving mass inertia block -->
   <xacro:property name="movable_mass_inertia">
      <inertia 
-     ixx="${(mm_mass * mm_dimension * mm_dimension)/6}" 
-     iyy="${(mm_mass * mm_dimension * mm_dimension)/6}" 
-     izz="${(mm_mass * mm_dimension * mm_dimension)/6}" 
+     ixx="${mm_mass * (mm_path_len/2 * mm_path_len/2)}" 
+     iyy="${mm_mass * (mm_path_len/2 * mm_path_len/2)}" 
+     izz="${mm_mass * (mm_path_len/2 * mm_path_len/2)}" 
      ixy="0.0" ixz="0.0"  iyz="0.0" /> <!-- [kg*m^2] [kg*m^2] [kg*m^2] [kg*m^2] [kg*m^2] [kg*m^2] -->
   </xacro:property>
 
