@@ -65,7 +65,7 @@ class SMC_basic_ctl(object):
 		# Q filter
 		self.T_dob1 = 0.3
 		self.T_dob2 = 0.2
-		self.D = 5
+		self.D = 0.05
 
 		# Ref prefilter
 		self.T_f1 = 0.17
@@ -107,8 +107,8 @@ class SMC_basic_ctl(object):
 		self.smc_I = 30 #30
 		self.smc_D = 0.1 #0.1
 		self.lam = 35 #0.15
-		self.eta = 0.255
-		self.tanh_n = 100
+		self.eta = 0.255  #255
+		self.tanh_n = 1
 
 		# Matlab params
 		"""self.smc_P = 0.2
@@ -171,6 +171,32 @@ class SMC_basic_ctl(object):
 		self.lpdr = 0
 		self.lpddr = 0
 
+		#RIC
+		self.pn_ukp = 0
+		self.pn_ukkp = 0
+		self.pn_ykp = 0
+		self.pn_ykkp = 0
+
+		self.dup = 0
+		self.dukp = 0
+		self.dykp = 0
+
+		self.pn_ukr = 0
+		self.pn_ukkr = 0
+		self.pn_ykr = 0
+		self.pn_ykkr = 0
+
+		self.dur = 0
+		self.dukr = 0
+		self.dykr = 0
+
+		self.ric_pitch = 0
+		self.ric_roll = 0
+		self.ur_pitch = 0
+		self.ur_roll = 0
+
+
+
 		
 
 		
@@ -196,6 +222,8 @@ class SMC_basic_ctl(object):
 		self.dx_pub = rospy.Publisher('/arducopter/dx', Float64, queue_size = 10)
 		self.euler_ang = rospy.Publisher('arducopter/euler_angles', Vector3, queue_size = 10)
 		self.motor_cmd = rospy.Publisher('/arducopter/command/motors', MotorSpeed, queue_size = 10)
+		self.ric_pub = rospy.Publisher('/arducopter/ric', Float64, queue_size = 10)
+		self.nula_pub = rospy.Publisher('/nula', Float32, queue_size = 10)
 
 		#rospy.sleep(0.01)
 
@@ -221,6 +249,10 @@ class SMC_basic_ctl(object):
 		while not rospy.is_shutdown():
 			Ts = 0.01
 			rospy.sleep(Ts)
+
+			konst_msg = Float32()
+			konst_msg.data = 0.0
+			self.nula_pub.publish(konst_msg)
 
 			# TIME
 			clock_now_pitch = self.clock
@@ -264,14 +296,22 @@ class SMC_basic_ctl(object):
 			# Sigma
 			[self.sigma_I_old_p, self.ydp, self.sigma_pitch] = self.sigma(self.y_pitch, self.yd_pitch, pitch_m, pitch_r, dt, self.sigma_I_old_p, ydp)
 
+			[self.pn_ukkp, self.pn_ukp, self.pn_ykkp, self.pn_ykp, self.dukp, self.dykp, self.ric_pitch] = self.RIC(self.ur_pitch, pitch_m, self.pn_ukp, self.pn_ukkp, self.pn_ykp, self.pn_ykkp, self.dukp, self.dykp)
+
+
 			# PUBLISHER SIGMA - ZA TESTIRANJE
 			s_msg = Float64()
 			s_msg.data = self.sigma_pitch
 			self.s_pub.publish(s_msg)
 
+			# PUBLISHER RIC - ZA TESTIRANJE
+			ric_msg = Float64()
+			ric_msg.data = self.ric_pitch
+			self.ric_pub.publish(ric_msg)
+
 			# Control signal
 
-			dx_pitch = self.control_smc(self.sigma_pitch, self.y_pitch, self.yd_pitch, self.ydd_pitch, pitch_m, self.tanh_n)
+			[dx_pitch, self.ur_pitch] = self.control_smc(self.sigma_pitch, self.y_pitch, self.yd_pitch, self.ydd_pitch, pitch_m, self.tanh_n, self.ric_pitch)
 
 			#print dx_pitch
 			dx_msg = Float64()
@@ -288,9 +328,11 @@ class SMC_basic_ctl(object):
 			# Sigma
 			[self.sigma_I_old_r, self.ydr, self.sigma_roll] = self.sigma(self.y_roll, self.yd_roll, roll_m, roll_r, dt, self.sigma_I_old_r, ydr)
 
+			[self.pn_ukkr, self.pn_ukr, self.pn_ykkr, self.pn_ykr, self.dukr, self.dykr, self.ric_roll] = self.RIC(self.ur_roll, roll_m, self.pn_ukr, self.pn_ukkr, self.pn_ykr, self.pn_ykkr, self.dukr, self.dykr)
+
 			# Control signal
 
-			dy_roll = self.control_smc(self.sigma_roll, self.y_roll, self.yd_roll, self.ydd_roll, roll_m, self.tanh_n)
+			[dy_roll, self.ur_roll] = self.control_smc(self.sigma_roll, self.y_roll, self.yd_roll, self.ydd_roll, roll_m, self.tanh_n, self.ric_roll)
 
 
 			# AKO SE NALAZIMO NA PODU ZAKOCI MASE - DA SE NE KRECE U POCETNOM TRENUTKU
@@ -377,6 +419,31 @@ class SMC_basic_ctl(object):
 		return 0.632120558828558*u + 0.367879441171442*y
 		#return 0.181269246922018*u + 0.818730753077982*y
 
+	def Pn(self, uk, ukk, yk, ykk):
+		return 0.009465215333649*(uk + ukk) + 2*yk - ykk
+
+	def s_component(self, u, uk, yk):
+		return 100*u -9.999999999999999e+01*uk + 0.367879441171442*yk
+
+	def RIC(self, ur, angle, pn_uk, pn_ukk, pn_yk, pn_ykk, duk, dyk):
+		pn = self.Pn(pn_uk, pn_ukk, pn_yk, pn_ykk)
+
+		du = (pn - angle)*self.Iq_yy
+		s = self.s_component(du, duk, dyk)
+
+		ric = s * self.D
+
+		self.br += 1
+		if self.br % 30 == 0:
+			pass
+			
+
+
+		return pn_uk, ur, pn_yk, pn, du, s, ric
+
+
+
+
 	def dead_zone(self, signal, tol):
 		if signal > -tol and signal < tol:
 			return 0
@@ -442,7 +509,7 @@ class SMC_basic_ctl(object):
 		return sigma_I_old, sigma_D, sigma
 
 
-	def control_smc(self, sigma, ref, ref_d, ref_dd, angle_m, n):
+	def control_smc(self, sigma, ref, ref_d, ref_dd, angle_m, n, u_ric):
 		e = ref - angle_m
 
 		u_nom = 0
@@ -467,9 +534,10 @@ class SMC_basic_ctl(object):
 
 		
 
-		u_tmp = (u_nom + u_ctl_vector) / (2 * self.m * self.g)
+		u_r = (u_nom + u_ctl_vector) 
+		u_tmp = (u_r + u_ric) / (2 * self.m * self.g)
 
-		return self.satur(u_tmp)
+		return self.satur(u_tmp), u_r
 
 
 

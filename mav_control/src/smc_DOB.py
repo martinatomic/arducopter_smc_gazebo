@@ -171,7 +171,39 @@ class SMC_basic_ctl(object):
 		self.lpdr = 0
 		self.lpddr = 0
 
-		
+		# DOB
+		self.delta_pitch = 0
+		self.dob_q_ukp = 0
+		self.dob_q_ukkp = 0
+		self.dob_q_yp = 0
+		self.dob_q_ykp = 0
+		self.dob_q_ykkp = 0
+
+		self.dob_pq_up = 0 
+		self.dob_pq_ukp = 0
+		self.dob_pq_ukkp = 0
+		self.dob_pq_yp = 0
+		self.dob_pq_ykp = 0
+		self.dob_pq_ykkp = 0
+
+		self.delta_roll = 0
+		self.dob_q_ukr = 0
+		self.dob_q_ukkr = 0
+		self.dob_q_yr = 0
+		self.dob_q_ykr = 0
+		self.dob_q_ykkr = 0
+
+		self.dob_pq_ur = 0 
+		self.dob_pq_ukr = 0
+		self.dob_pq_ukkr = 0
+		self.dob_pq_yr = 0
+		self.dob_pq_ykr = 0
+		self.dob_pq_ykkr = 0
+
+		self.u_pitch_dob = 0
+		self.u_roll_dob = 0
+
+		self.konst = 0
 
 		
 
@@ -196,6 +228,8 @@ class SMC_basic_ctl(object):
 		self.dx_pub = rospy.Publisher('/arducopter/dx', Float64, queue_size = 10)
 		self.euler_ang = rospy.Publisher('arducopter/euler_angles', Vector3, queue_size = 10)
 		self.motor_cmd = rospy.Publisher('/arducopter/command/motors', MotorSpeed, queue_size = 10)
+		self.delta_pub = rospy.Publisher('/arducopter/delta', Float64, queue_size = 10)
+		self.konst_pub = rospy.Publisher('/nula', Float32, queue_size = 10)
 
 		#rospy.sleep(0.01)
 
@@ -269,9 +303,21 @@ class SMC_basic_ctl(object):
 			s_msg.data = self.sigma_pitch
 			self.s_pub.publish(s_msg)
 
-			# Control signal
+			konst_msg = Float32()
+			konst_msg.data = self.konst
+			self.konst_pub.publish(konst_msg)
 
-			dx_pitch = self.control_smc(self.sigma_pitch, self.y_pitch, self.yd_pitch, self.ydd_pitch, pitch_m, self.tanh_n)
+			# DOB Delta
+			[self.dob_q_ukkp, self.dob_q_ukp, self.dob_q_ykkp, self.dob_q_ykp, self.dob_pq_ukkp, self.dob_pq_ukp, self.dob_pq_ykkp, self.dob_pq_ykp, self.delta_pitch] = self.DOB(self.u_pitch_dob, self.dob_q_ukp, self.dob_q_ukkp, self.dob_q_ykp, self.dob_q_ykkp, pitch_m, self.dob_pq_ukp, self.dob_pq_ukkp, self.dob_pq_ykp, self.dob_pq_ykkp)
+			
+			# PUBLISHER DELTA - ZA TESTIRANJE
+			d_msg = Float64()
+			d_msg.data = self.delta_pitch
+			self.delta_pub.publish(d_msg)
+
+
+			# Control signal
+			[dx_pitch, self.u_pitch_dob] = self.control_smc(self.sigma_pitch, self.y_pitch, self.yd_pitch, self.ydd_pitch, pitch_m, self.tanh_n, self.delta_pitch)
 
 			#print dx_pitch
 			dx_msg = Float64()
@@ -288,9 +334,11 @@ class SMC_basic_ctl(object):
 			# Sigma
 			[self.sigma_I_old_r, self.ydr, self.sigma_roll] = self.sigma(self.y_roll, self.yd_roll, roll_m, roll_r, dt, self.sigma_I_old_r, ydr)
 
+			# DOB Delta
+			[self.dob_q_ukkr, self.dob_q_ukr, self.dob_q_ykkr, self.dob_q_ykr, self.dob_pq_ukkr, self.dob_pq_ukr, self.dob_pq_ykkr, self.dob_pq_ykr, self.delta_roll] = self.DOB(self.u_roll_dob, self.dob_q_ukr, self.dob_q_ukkr, self.dob_q_ykr, self.dob_q_ykkr, roll_m, self.dob_pq_ukr, self.dob_pq_ukkr, self.dob_pq_ykr, self.dob_pq_ykkr)
+	
 			# Control signal
-
-			dy_roll = self.control_smc(self.sigma_roll, self.y_roll, self.yd_roll, self.ydd_roll, roll_m, self.tanh_n)
+			[dy_roll, self.u_roll_dob] = self.control_smc(self.sigma_roll, self.y_roll, self.yd_roll, self.ydd_roll, roll_m, self.tanh_n, self.delta_roll)
 
 
 			# AKO SE NALAZIMO NA PODU ZAKOCI MASE - DA SE NE KRECE U POCETNOM TRENUTKU
@@ -394,6 +442,32 @@ class SMC_basic_ctl(object):
 		else:
 			return u
 
+	def Q(self, uk, ukk, yk, ykk):
+		return 5.433628352605679e-04*uk + 5.433628352605679e-04*ukk + 1.934432200964012*yk - 0.935506985031618*ykk
+
+	def P_Q(self, u, uk, ukk, yk, ykk):
+		return 0.058694444444444*u -0.117356996509142*uk + 0.058662552064697*ukk + 1.934432200964012*yk - 0.935506985031618*ykk
+
+	def DOB(self, qu, q_uk, q_ukk, q_yk, q_ykk, pq_u, pq_uk, pq_ukk, pq_yk, pq_ykk):
+		q = self.Q(q_uk, q_ukk, q_yk, q_ykk)
+		pq = self.P_Q(pq_u, pq_uk, pq_ukk, pq_yk, pq_ykk)
+
+		delta = pq - q
+
+		#azuriranje stanja
+		#q_ukk = q_uk
+		#q_uk = qu
+		#q_ykk = q_yk
+		#q_yk = q
+
+		#pq_ukk = pq_uk
+		#pq_uk = pq_u
+		#pq_ykk = pq_yk
+		#pq_yk = pq
+
+		return q_uk, qu, q_yk, q, pq_uk, pq_u, pq_yk, pq, delta
+
+
 
 	def sigma(self, ref, ref_d, angle_m, angle_r, dt, sigma_I_old, y):
 		sigma = 0
@@ -442,7 +516,7 @@ class SMC_basic_ctl(object):
 		return sigma_I_old, sigma_D, sigma
 
 
-	def control_smc(self, sigma, ref, ref_d, ref_dd, angle_m, n):
+	def control_smc(self, sigma, ref, ref_d, ref_dd, angle_m, n, delta):
 		e = ref - angle_m
 
 		u_nom = 0
@@ -465,11 +539,10 @@ class SMC_basic_ctl(object):
 
 		u_ctl_vector = self.eta * tanh(sigma)
 
-		
+		u = (u_nom + u_ctl_vector - delta)
+		u_tmp = u / (2 * self.m * self.g)
 
-		u_tmp = (u_nom + u_ctl_vector) / (2 * self.m * self.g)
-
-		return self.satur(u_tmp)
+		return self.satur(u_tmp), u
 
 
 
